@@ -1,7 +1,20 @@
-# Tauri + Vue + TypeScript
+# Dictation
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+A small desktop dictation app built with Tauri 2 (Rust backend, Vue + TypeScript frontend). It records from the microphone, splits the audio at pauses, and transcribes everything locally with whisper.cpp. Windows is the target platform.
 
-## Recommended IDE Setup
+## Prerequisites (Windows)
 
-- [VS Code](https://code.visualstudio.com/) + [Vue - Official](https://marketplace.visualstudio.com/items?itemName=Vue.volar) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+- Rust (stable)
+- Node.js and node package manager (pnpm was used during development)
+- WebView2 runtime (included with Windows 11)
+
+## Run
+
+```
+pnpm install
+pnpm run tauri dev
+```
+
+## AI usage
+
+See [docs/AI_USAGE.md](docs/AI_USAGE.md).
