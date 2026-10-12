@@ -1,0 +1,40 @@
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+/* Panels */
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+/* Fields inside of panels */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+}
+
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 1.75rem;
+}
+
+/* Input elements */
+.input {
+  width: 100%;
+  min-width: 0;
+  height: 2.25rem;
+  padding: 0 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--bg);
+}
