@@ -1,7 +1,10 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tauri::AppHandle;
 
-use crate::capture::{self, InputDeviceInfo};
+use crate::{
+    capture::{self, InputDeviceInfo},
+    recorder::StartOptions,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CommandError {
@@ -27,12 +30,6 @@ pub async fn list_input_devices() -> Result<Vec<InputDeviceInfo>, CommandError> 
         .map_err(|err| CommandError::CaptureError(err))?;
 
     Ok(input_devices)
-}
-
-#[derive(Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct StartOptions {
-    device_id: Option<String>,
 }
 
 #[tauri::command]

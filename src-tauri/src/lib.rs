@@ -1,5 +1,7 @@
 mod capture;
 mod commands;
+mod recorder;
+mod stream;
 
 fn run_prelude() {
     #[cfg(target_os = "linux")]
