@@ -126,7 +126,7 @@ impl Recorder {
                 .map_err(RecorderError::StreamSource)?;
 
             state.last_session += 1;
-            
+
             todo!("Handle segmentation and transcription");
         };
 

@@ -35,7 +35,7 @@ export default withVueTs(
             '@stylistic/quotes': ['error', 'single', { avoidEscape: true }],
             '@stylistic/semi': ['error', 'always'],
             '@stylistic/comma-dangle': ['error', 'always-multiline'],
-            'vue/html-quotes': ['error', 'single'],
+            'vue/html-quotes': ['error', 'double'],
             'vue/multi-word-component-names': 'off',
         },
     }

@@ -2,10 +2,7 @@
 name = "dicta"
 version = "0.1.0"
 description = "A Tauri App"
-authors = [
-    "Yupiel <yupiel@yupiel.net>",
-    "Claude Sonnet 5.5 (AI Agent)"
-]
+authors = ["Yupiel <yupiel@yupiel.net>", "Claude Sonnet 5.5 (AI Agent)"]
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -25,6 +22,7 @@ cpal = { version = "0.18", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }
+tauri-plugin-http = { version = "2", features = ["stream"] }
 tauri-plugin-opener = "2"
 thiserror = "2.0.21"
 whisper-rs = "0.16.0"

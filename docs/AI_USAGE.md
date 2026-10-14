@@ -20,10 +20,13 @@ Claude (Anthropic) as a coding assistant. Model: Sonnet 5.5.
 | Frontend (Vue + TypeScript) | Drafted the components and the styling | `vue-tsc` type check; static HTML mock of the CSS states rendered in Chromium; clicked through the real UI in the Tauri window |
 | Recorder | Drafted the phase state machine |  |
 | Whisper adapter | Drafted the whisper-rs wrapper | checked parameters against the whisper-rs docs and issues |
+| segmenter | Drafted the silence detection | |
+| model download | Outlined `models.rs` and the matching commands and Vue components | downloaded a model on my machine |
 
 ## Where the AI was wrong
 - A boxed error did not convert with `?`; fixed with an explicit `map_err`.
 - Attempted to pull more packages than necessary for eslint: `@eslint/js`, `globals`
+- A fixed RMS silence threshold dropped quiet speech and cut segments too early. Replaced by an adaptive noise-floor threshold with hysteresis.
 
 ## How I verify
 

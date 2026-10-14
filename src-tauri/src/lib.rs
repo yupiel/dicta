@@ -1,5 +1,8 @@
 mod capture;
 mod commands;
+mod data;
+mod events;
+mod models;
 mod recorder;
 mod segmenter;
 mod stream;
@@ -21,10 +24,14 @@ pub fn run() {
     run_prelude();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             commands::list_input_devices,
             commands::start_recording,
+
+            commands::list_models,
+            commands::download_model,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
