@@ -19,6 +19,7 @@ Claude (Anthropic) as a coding assistant. Model: Sonnet 5.5.
 | Eslint | Setup including Vue and Typescript checks | ran lints and lint fixes by hand and appended rules important to me
 | Frontend (Vue + TypeScript) | Drafted the components and the styling | `vue-tsc` type check; static HTML mock of the CSS states rendered in Chromium; clicked through the real UI in the Tauri window |
 | Recorder | Drafted the phase state machine |  |
+| Whisper adapter | Drafted the whisper-rs wrapper | checked parameters against the whisper-rs docs and issues |
 
 ## Where the AI was wrong
 - A boxed error did not convert with `?`; fixed with an explicit `map_err`.
