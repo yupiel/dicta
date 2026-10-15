@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import type { DownloadState, ModelInfo } from '../api';
+import type { ModelInfo } from '../api';
+import type { DownloadState } from '../composables/useDicta';
 
 const props = defineProps<{
   models: ModelInfo[];
   download: DownloadState | null;
+  canLoad: boolean;
   loadedSource: string | null;
   loading: boolean;
 }>();
@@ -33,6 +35,8 @@ const percent = computed(() => {
         :key="model.id"
         class="model"
       >
+      {{ model }}
+      {{ canLoad }}
         <div class="model__info">
           <span class="model__name">{{ model.label }}</span>
           <span class="muted">{{ model.sizeMb }} MB</span>
@@ -45,6 +49,7 @@ const percent = computed(() => {
           v-else-if="model.installed"
           class="btn"
           type="button"
+          :disabled="!canLoad"
           @click="emit('load', model.path)"
         >
           {{ loading ? 'Loading…' : 'Load' }}
@@ -53,7 +58,7 @@ const percent = computed(() => {
           v-else
           class="btn btn--primary"
           type="button"
-          :disabled="downloading"
+          :disabled="!canLoad || downloading"
           @click="emit('download', model.id)"
         >
           Download
@@ -86,7 +91,7 @@ const percent = computed(() => {
           <button
             class="btn"
             type="button"
-            :disabled="!customPath.trim()"
+            :disabled="!canLoad || !customPath.trim()"
             @click="emit('load', customPath.trim())"
           >
             Load

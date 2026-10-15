@@ -1,12 +1,17 @@
+use std::path::{Path, PathBuf};
+
+use opener::OpenError;
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::{
     capture::{self, InputDeviceInfo},
-    data::data_subdir,
     events::{UiEvent, emit_ui_event},
+    history::{self, HistoryEntry, HistoryError, HistoryStore},
+    live_text::LiveTextStore,
     models::{self, DownloadGate, ModelError, ModelInfo},
-    recorder::StartOptions,
+    recorder::{self, Phase, Recorder, RecorderError, StartOptions},
+    whisper::WhisperTranscriber,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -17,11 +22,34 @@ pub enum CommandError {
     CaptureError(cpal::Error),
     #[error("{0}")]
     ModelError(models::ModelError),
+    #[error("{0}")]
+    RecorderError(recorder::RecorderError),
+    #[error("{0}")]
+    HistoryError(history::HistoryError),
+    #[error("{0}")]
+    OpenError(opener::OpenError),
+    #[error("{0}")]
+    WhisperError(String),
 }
 
 impl From<ModelError> for CommandError {
     fn from(value: ModelError) -> Self {
         Self::ModelError(value)
+    }
+}
+impl From<RecorderError> for CommandError {
+    fn from(value: RecorderError) -> Self {
+        Self::RecorderError(value)
+    }
+}
+impl From<HistoryError> for CommandError {
+    fn from(value: HistoryError) -> Self {
+        Self::HistoryError(value)
+    }
+}
+impl From<OpenError> for CommandError {
+    fn from(value: OpenError) -> Self {
+        Self::OpenError(value)
     }
 }
 
@@ -34,6 +62,17 @@ impl Serialize for CommandError {
     }
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DictaStatus {
+    phase: Phase,
+    model_loaded: bool,
+}
+
+fn data_subdir(app: &AppHandle, name: &str) -> Result<PathBuf, tauri::Error> {
+    app.path().app_data_dir().map(|dir| dir.join(name))
+}
+
 #[tauri::command]
 pub async fn list_input_devices() -> Result<Vec<InputDeviceInfo>, CommandError> {
     let input_devices = tauri::async_runtime::spawn_blocking(capture::list_input_devices)
@@ -44,10 +83,28 @@ pub async fn list_input_devices() -> Result<Vec<InputDeviceInfo>, CommandError> 
 }
 
 #[tauri::command]
-pub async fn start_recording(app: AppHandle, options: StartOptions) -> Result<(), CommandError> {
-    println!("Device ID: {:?}", options.device_id);
+pub async fn start_recording(
+    recorder: State<'_, Recorder>,
+    options: StartOptions,
+) -> Result<u64, CommandError> {
+    let recorder = recorder.inner().clone();
 
-    Ok(())
+    Ok(
+        tauri::async_runtime::spawn_blocking(move || recorder.start(options))
+            .await?
+            .map_err(|err| CommandError::RecorderError(err))?,
+    )
+}
+
+#[tauri::command]
+pub async fn stop_recording(recorder: State<'_, Recorder>) -> Result<(), CommandError> {
+    let recorder = recorder.inner().clone();
+
+    Ok(
+        tauri::async_runtime::spawn_blocking(move || recorder.stop())
+            .await?
+            .map_err(|err| CommandError::RecorderError(err))?,
+    )
 }
 
 #[tauri::command]
@@ -80,7 +137,7 @@ pub async fn download_model(
 
     Ok(tauri::async_runtime::spawn_blocking(move || {
         let _permit = permit;
-        models::download(spec, dir, move |downloaded, total| {
+        models::download(spec, &dir, move |downloaded, total| {
             emit_ui_event(
                 &app,
                 UiEvent::DownloadProgress {
@@ -93,8 +150,86 @@ pub async fn download_model(
     })
     .await
     .map_err(CommandError::BlockingFailed)?
-    .await
     .map_err(CommandError::ModelError)?
     .to_string_lossy()
     .to_string())
+}
+
+#[tauri::command]
+pub async fn load_model(recorder: State<'_, Recorder>, path: String) -> Result<(), CommandError> {
+    let recorder = recorder.inner().clone();
+
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        if !Path::new(&path).is_file() {
+            return Err(format!("model file not found: {path}"));
+        }
+        
+        let transcriber = WhisperTranscriber::load(&path, None)
+            .map_err(|error| format!("cannot load model {path}: {error}"))?;
+        recorder.set_model(transcriber, path);
+
+        Ok(())
+    })
+    .await?
+    .map_err(CommandError::WhisperError)
+}
+
+#[tauri::command]
+pub async fn get_status(recorder: State<'_, Recorder>) -> Result<DictaStatus, String> {
+    Ok(DictaStatus {
+        phase: recorder.phase().into(),
+        model_loaded: recorder.has_model(),
+    })
+}
+
+#[tauri::command]
+pub async fn reset_transcript(live_text: State<'_, LiveTextStore>) -> Result<(), CommandError> {
+    live_text.clear();
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn list_history(
+    history: State<'_, HistoryStore>,
+) -> Result<Vec<HistoryEntry>, CommandError> {
+    let history = history.inner().clone();
+
+    Ok(tauri::async_runtime::spawn_blocking(move || history.list())
+        .await?
+        .map(|entries| entries.into_iter().map(HistoryEntry::from).collect())?)
+}
+
+#[tauri::command]
+pub async fn delete_history(
+    history: State<'_, HistoryStore>,
+    id: String,
+) -> Result<(), CommandError> {
+    let history = history.inner().clone();
+
+    tauri::async_runtime::spawn_blocking(move || history.delete(&id))
+        .await?
+        .map_err(CommandError::HistoryError)
+}
+
+#[tauri::command]
+pub async fn reveal_history_entry(
+    history: State<'_, HistoryStore>,
+    id: String,
+) -> Result<(), CommandError> {
+    let history = history.inner().clone();
+
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), CommandError> {
+        let path = history.locate(&id)?;
+        Ok(opener::reveal(path)?)
+    })
+    .await?
+}
+
+#[tauri::command]
+pub async fn clear_history(history: State<'_, HistoryStore>) -> Result<(), CommandError> {
+    let history = history.inner().clone();
+
+    tauri::async_runtime::spawn_blocking(move || history.clear())
+        .await?
+        .map_err(CommandError::HistoryError)
 }

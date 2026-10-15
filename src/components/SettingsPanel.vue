@@ -1,20 +1,24 @@
 <script setup lang="ts">
-import type { DownloadState, InputDevice, ModelInfo } from '../api';
+import type { InputDevice, ModelInfo } from '../api';
+import type { AutoMode, DownloadState } from '../composables/useDicta';
 import ModelPanel from './ModelPanel.vue';
 
 const selectedInputDevice = defineModel<string | undefined>('selectedInputDevice', { required: true });
+const language = defineModel<string>('language', { required: true });
+const autoMode = defineModel<AutoMode>('autoMode', { required: true });
 
 defineProps<{
-    devices: InputDevice[];
-    models: ModelInfo[];
-    download: DownloadState | null;
-    loadedSource: string | null;
-    loading: boolean;
+  devices: InputDevice[];
+  models: ModelInfo[];
+  download: DownloadState | null;
+  canLoad: boolean;
+  loadedSource: string | null;
+  loading: boolean;
 }>();
 
 const emit = defineEmits<{
-    load: [path: string];
-    download: [modelId: string];
+  load: [path: string];
+  download: [modelId: string];
 }>();
 </script>
 
@@ -38,18 +42,67 @@ const emit = defineEmits<{
         >
           <option
             v-for="device in devices"
-            :key="device.id"
+            :key="device.name"
             :value="device.id"
           >
             {{ device.name }}{{ device.isDefault ? ' (default)' : '' }}
           </option>
         </select>
       </label>
+      <label
+        class="field"
+        for="language"
+      >
+        <span>Language code (empty = auto-detect)</span>
+        <input
+          id="language"
+          v-model="language"
+          class="input"
+          type="text"
+        >
+      </label>
+    </section>
+
+    <section class="field-group">
+      <h3>Recording</h3>
+      <label
+        class="field field--inline"
+        for="auto-mode"
+      >
+        <span>Auto mode</span>
+        <input
+          id="auto-mode"
+          v-model="autoMode.enabled"
+          type="checkbox"
+          role="switch"
+          class="toggle"
+        >
+      </label>
+      <p class="muted hint">
+        Keeps recording after a long pause. The text stays until you speak again, then it is replaced.
+      </p>
+      <label
+        class="field"
+        for="auto-pause"
+      >
+        <span>Pause that ends an utterance (seconds)</span>
+        <input
+          id="auto-pause"
+          v-model.number="autoMode.pauseSeconds"
+          class="input"
+          type="number"
+          min="1"
+          max="10"
+          step="0.5"
+          :disabled="!autoMode.enabled"
+        >
+      </label>
     </section>
 
     <ModelPanel
       :models="models"
       :download="download"
+      :can-load="canLoad"
       :loaded-source="loadedSource"
       :loading="loading"
       @load="emit('load', $event)"

@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
 
+use serde::Serialize;
+
 use crate::whisper::WHISPER_SAMPLE_RATE;
 
 const NOISE_FALL_PER_FRAME: f32 = 0.1;
@@ -41,7 +43,8 @@ impl Default for SegmenterConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub enum CutReason {
     Pause,
     MaxLength,
@@ -50,7 +53,6 @@ pub enum CutReason {
 
 #[derive(Debug, Clone)]
 pub struct Segment {
-    pub start_sample: usize,
     pub samples: Vec<f32>,
     pub reason: CutReason,
 }
@@ -231,7 +233,6 @@ impl Segmenter {
 
         if self.speech_len >= self.min_speech_len {
             out.push(Segment {
-                start_sample: self.segment_start,
                 samples,
                 reason,
             });

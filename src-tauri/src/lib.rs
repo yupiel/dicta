@@ -1,9 +1,22 @@
+use std::sync::Arc;
+
+use tauri::Manager;
+
+use crate::{
+    capture::CpalSource, history::HistoryStore, live_text::LiveTextStore, models::DownloadGate,
+    recorder::Recorder,
+};
+
+mod auto;
 mod capture;
 mod commands;
-mod data;
 mod events;
+mod history;
+mod live_text;
 mod models;
+mod pipeline;
 mod recorder;
+mod resample;
 mod segmenter;
 mod stream;
 mod whisper;
@@ -24,12 +37,37 @@ pub fn run() {
     run_prelude();
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            let history = HistoryStore::new(app.path().app_data_dir()?.join("history"));
+            app.manage(history.clone());
+            app.manage(DownloadGate::default());
+
+            let live_text = LiveTextStore::default();
+            app.manage(live_text.clone());
+
+            let handle = app.handle().clone();
+            let recorder = Recorder::new(
+                Arc::new(move |event| {
+                    events::handle_recorder_event(&handle, &history, &live_text, event)
+                }),
+                Arc::new(CpalSource),
+            );
+            app.manage(recorder);
+
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::list_input_devices,
+            commands::load_model,
             commands::start_recording,
-
+            commands::stop_recording,
+            commands::get_status,
+            commands::reset_transcript,
+            commands::list_history,
+            commands::delete_history,
+            commands::clear_history,
+            commands::reveal_history_entry,
             commands::list_models,
             commands::download_model,
         ])
