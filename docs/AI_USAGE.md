@@ -25,6 +25,7 @@ Claude (Anthropic) as a coding assistant. Model: Sonnet 5.5.
 | History store | Drafted `history.rs` and the matching commands and Vue components | checked the history files on my machine |
 | Auto mode | Drafted the pause timer in the segmenter, the `Waiter` that confirms speech between utterances, the pipeline stages and the replace logic in the frontend | Unit tests with synthetic signals (speech, long pause, click, quiet speech, second utterance, stop while waiting); tried it with my voice and different pause lengths |
 | Unit tests | generated unit tests for various components which did not have unit tests but might have complex functionality | manually checked the tests to make sure they make sense and don't test against unintended functionality
+| README | rough outline of the README file for the user to fill out | 
 
 ## Where the AI was wrong
 - A boxed error did not convert with `?`; fixed with an explicit `map_err`.
