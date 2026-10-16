@@ -1,7 +1,12 @@
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
-use crate::{history::{HistoryEntry, HistoryStore}, live_text::LiveTextStore, recorder::{Phase, RecorderEvent}, segmenter::CutReason};
+use crate::{
+    history::{HistoryEntry, HistoryStore},
+    live_text::LiveTextStore,
+    recorder::{Phase, RecorderEvent},
+    segmenter::CutReason,
+};
 
 const DICTA_EVENT_NAME: &'static str = "dicta";
 
@@ -76,7 +81,6 @@ impl From<RecorderEvent> for UiEvent {
         }
     }
 }
-
 
 pub fn emit_ui_event(app: &AppHandle, event_payload: UiEvent) {
     if let Err(error) = app.emit(DICTA_EVENT_NAME, event_payload) {

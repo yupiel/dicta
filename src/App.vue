@@ -17,6 +17,9 @@ const {
   loadedSource,
   loadingModel,
   copied,
+  insertShortcut,
+  shortcutError,
+  changeInsertShortcut,
   canLoad,
   canCopy,
   history,
@@ -130,6 +133,9 @@ function openSettings() {
           v-model:selected-input-device="selectedInputDevice"
           v-model:language="language"
           v-model:auto-mode="autoMode"
+          :insert-shortcut="insertShortcut"
+          :shortcut-error="shortcutError"
+          @change-shortcut="changeInsertShortcut"
           :devices="devices"
           :models="models"
           :download="download"

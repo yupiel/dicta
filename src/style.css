@@ -646,6 +646,30 @@ h3 {
   color: var(--recording);
 }
 
+.hotkey-input {
+  text-align: left;
+  cursor: pointer;
+}
+
+.hotkey-input[data-capturing='true'] {
+  border-color: var(--accent);
+  color: var(--muted);
+}
+
+.hint {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+kbd {
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 0.3rem;
+  background: var(--bg);
+  font: inherit;
+  font-size: 0.78rem;
+}
+
 .btn {
   flex: none;
   height: 2.25rem;

@@ -24,6 +24,7 @@ Claude (Anthropic) as a coding assistant. Model: Sonnet 5.5.
 | model download | Outlined `models.rs` and the matching commands and Vue components | downloaded a model on my machine |
 | History store | Drafted `history.rs` and the matching commands and Vue components | checked the history files on my machine |
 | Auto mode | Drafted the pause timer in the segmenter, the `Waiter` that confirms speech between utterances, the pipeline stages and the replace logic in the frontend | Unit tests with synthetic signals (speech, long pause, click, quiet speech, second utterance, stop while waiting); tried it with my voice and different pause lengths |
+| Unit tests | generated unit tests for various components which did not have unit tests but might have complex functionality | manually checked the tests to make sure they make sense and don't test against unintended functionality
 
 ## Where the AI was wrong
 - A boxed error did not convert with `?`; fixed with an explicit `map_err`.
@@ -31,6 +32,8 @@ Claude (Anthropic) as a coding assistant. Model: Sonnet 5.5.
 - A fixed RMS silence threshold dropped quiet speech and cut segments too early. Replaced by an adaptive noise-floor threshold with hysteresis.
 - It assumed whisper-rs ignores earlier text between calls. `no_context` defaults to false, so previous segments leaked into later ones; it is now set explicitly.
 - The first resampler decimated without a low-pass filter, which aliased speech and made previews unintelligible. Replaced by a windowed-sinc resampler.
+- Two auto-mode tests had wrong expectations (a lead-in bound off by one chunk, and the length of the second utterance, which includes up to 1.5 s of kept lead-in). The tests were wrong, not the code.
+- A test expected the wrong event sequence (missing the model-loaded event). The test was wrong, not the code.
 
 ## How I verify
 

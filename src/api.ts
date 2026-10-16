@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 
 // --- Types ---
 export interface InputDevice {
@@ -55,6 +56,8 @@ export type DictaEvent =
 export interface Status {
     phase: Phase;
     modelLoaded: boolean;
+    insertShortcut: string;
+    shortcutError: string | null;
 }
 
 export interface HistoryEntry {
@@ -65,6 +68,14 @@ export interface HistoryEntry {
 
 export type Phase = 'idle' | 'recording' | 'finalizing';
 export type CutReason = 'pause' | 'maxLength' | 'endOfRecording';
+
+export interface Hotkey {
+  ctrl: boolean;
+  alt: boolean;
+  shift: boolean;
+  meta: boolean;
+  key: string;
+}
 
 // --- Tauri Commands ---
 export const listInputDevices = () => invoke<InputDevice[]>('list_input_devices');
@@ -85,6 +96,9 @@ export const clearHistory = () => invoke<void>('clear_history');
 
 export const onDictaEvent = (handler: (event: DictaEvent) => void,
 ): Promise<UnlistenFn> => listen<DictaEvent>('dicta', (event) => handler(event.payload));
+
+export const copyText = (text: string) => writeText(text);
+export const setInsertShortcut = (hotkey: Hotkey) => invoke<string>('set_insert_shortcut', { hotkey });
 
 // Window Controls
 export const minimizeWindow = () => getCurrentWindow().minimize();

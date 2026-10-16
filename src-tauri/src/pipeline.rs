@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use crate::auto::{AutoConfig, Waiter};
-use crate::resample::{downmix_to_mono, Resampler};
-use crate::segmenter::{ms_to_samples, CutReason, Segment, Segmenter, SegmenterConfig};
+use crate::resample::{Resampler, downmix_to_mono};
+use crate::segmenter::{CutReason, Segment, Segmenter, SegmenterConfig, ms_to_samples};
 use crate::whisper::WHISPER_SAMPLE_RATE;
 
 pub type TranscribeError = Box<dyn std::error::Error + Send + Sync>;
@@ -405,5 +405,515 @@ fn run_transcription<T, F>(
                 ));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct LengthTranscriber;
+
+    impl Transcriber for LengthTranscriber {
+        fn transcribe(&mut self, samples: &[f32]) -> Result<String, TranscribeError> {
+            Ok(samples.len().to_string())
+        }
+    }
+
+    struct FailingTranscriber;
+
+    impl Transcriber for FailingTranscriber {
+        fn transcribe(&mut self, _: &[f32]) -> Result<String, TranscribeError> {
+            Err("model unavailable".into())
+        }
+    }
+
+    fn tone(rate: u32, seconds: u32) -> Vec<f32> {
+        (0..rate * seconds)
+            .map(|i| 0.3 * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / rate as f32).sin())
+            .collect()
+    }
+
+    fn stereo_input(rate: u32) -> Vec<f32> {
+        let silence = vec![0.0; rate as usize];
+        let mono = [
+            silence.clone(),
+            tone(rate, 2),
+            silence.clone(),
+            tone(rate, 12),
+            silence,
+        ]
+        .concat();
+        mono.iter().flat_map(|&s| [s, s]).collect()
+    }
+
+    fn run_configured<T: Transcriber>(
+        transcriber: T,
+        input: &[f32],
+        auto: Option<AutoConfig>,
+    ) -> Vec<Event> {
+        let (audio_tx, audio_rx) = mpsc::sync_channel(64);
+        let (event_tx, event_rx) = mpsc::channel();
+        let config = PipelineConfig {
+            input_sample_rate: 48_000,
+            input_channels: 2,
+            segmenter: SegmenterConfig::default(),
+            max_merged_preview_ms: 0,
+            auto,
+        };
+
+        let pipeline = Pipeline::start(config, audio_rx, transcriber, move |event| {
+            event_tx.send(event).unwrap();
+        });
+        for chunk in input.chunks(960) {
+            audio_tx.send(chunk.to_vec()).unwrap();
+        }
+        drop(audio_tx);
+        pipeline.finish().unwrap();
+
+        event_rx.try_iter().collect()
+    }
+
+    fn run_pipeline<T: Transcriber>(transcriber: T, input: &[f32]) -> Vec<Event> {
+        run_configured(transcriber, input, None)
+    }
+
+    #[test]
+    fn emits_previews_then_one_final_over_the_whole_recording() {
+        let events = run_pipeline(LengthTranscriber, &stereo_input(48_000));
+
+        let previews: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, Event::Preview { .. }))
+            .collect();
+        assert_eq!(previews.len(), 3);
+
+        let Some(Event::Final { text }) = events.last() else {
+            panic!("last event must be Final, got {events:?}");
+        };
+        let final_len: i64 = text.parse().unwrap();
+        assert!((final_len - 17 * 16_000).abs() <= 2, "got {final_len}");
+    }
+
+    #[test]
+    fn preview_indices_are_sequential() {
+        let events = run_pipeline(LengthTranscriber, &stereo_input(48_000));
+        let indices: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Preview { index, .. } => Some(*index),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(indices, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn previews_report_duration_and_cut_reason() {
+        let events = run_pipeline(LengthTranscriber, &stereo_input(48_000));
+        let previews: Vec<(u64, CutReason)> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Preview {
+                    duration_ms,
+                    reason,
+                    ..
+                } => Some((*duration_ms, *reason)),
+                _ => None,
+            })
+            .collect();
+
+        let expected = [
+            (2_600, CutReason::Pause),
+            (10_000, CutReason::MaxLength),
+            (2_600, CutReason::Pause),
+        ];
+        assert_eq!(previews.len(), expected.len(), "got {previews:?}");
+        for ((duration, reason), (want_duration, want_reason)) in previews.iter().zip(expected) {
+            assert_eq!(*reason, want_reason, "got {previews:?}");
+            assert!(duration.abs_diff(want_duration) <= 60, "got {previews:?}");
+        }
+    }
+
+    fn preview_job(index: usize, len: usize, reason: CutReason) -> Job {
+        Job::Preview {
+            index,
+            segment: Segment {
+                samples: vec![0.0; len],
+                reason,
+            },
+        }
+    }
+
+    fn queue_with(jobs: Vec<Job>) -> JobQueue {
+        let (tx, rx) = mpsc::channel();
+        for job in jobs {
+            tx.send(job).unwrap();
+        }
+        JobQueue::new(rx)
+    }
+
+    fn first_preview(queue: &mut JobQueue) -> (usize, Segment) {
+        match queue.next() {
+            Some(Job::Preview { index, segment }) => (index, segment),
+            _ => panic!("expected a preview job"),
+        }
+    }
+
+    #[test]
+    fn waiting_previews_are_merged_up_to_the_limit() {
+        let mut queue = queue_with(vec![
+            preview_job(0, 100, CutReason::Pause),
+            preview_job(1, 100, CutReason::MaxLength),
+            preview_job(2, 100, CutReason::Pause),
+        ]);
+        let (index, mut segment) = first_preview(&mut queue);
+
+        queue.merge_waiting_previews(&mut segment, 250);
+
+        assert_eq!(index, 0);
+        assert_eq!(segment.samples.len(), 200);
+        assert_eq!(segment.reason, CutReason::MaxLength);
+        let (next_index, next) = first_preview(&mut queue);
+        assert_eq!((next_index, next.samples.len()), (2, 100));
+    }
+
+    #[test]
+    fn a_waiting_final_is_never_merged() {
+        let mut queue = queue_with(vec![
+            preview_job(0, 100, CutReason::Pause),
+            Job::Final(vec![0.0; 5]),
+        ]);
+        let (_, mut segment) = first_preview(&mut queue);
+
+        queue.merge_waiting_previews(&mut segment, 10_000);
+
+        assert_eq!(segment.samples.len(), 100);
+        assert!(matches!(queue.next(), Some(Job::Final(samples)) if samples.len() == 5));
+    }
+
+    #[test]
+    fn a_limit_of_zero_disables_merging() {
+        let mut queue = queue_with(vec![
+            preview_job(0, 100, CutReason::Pause),
+            preview_job(1, 100, CutReason::Pause),
+        ]);
+        let (_, mut segment) = first_preview(&mut queue);
+
+        queue.merge_waiting_previews(&mut segment, 0);
+
+        assert_eq!(segment.samples.len(), 100);
+        assert_eq!(first_preview(&mut queue).0, 1);
+    }
+
+    #[test]
+    fn an_empty_queue_ends_the_iteration() {
+        let mut queue = queue_with(vec![]);
+        assert!(queue.next().is_none());
+    }
+
+    struct PreviewMarker;
+
+    impl Transcriber for PreviewMarker {
+        fn transcribe(&mut self, _: &[f32]) -> Result<String, TranscribeError> {
+            Ok("full".to_owned())
+        }
+
+        fn transcribe_preview(&mut self, _: &[f32]) -> Result<String, TranscribeError> {
+            Ok("fast".to_owned())
+        }
+    }
+
+    #[test]
+    fn previews_use_the_fast_path_and_the_final_uses_the_full_one() {
+        let events = run_pipeline(PreviewMarker, &stereo_input(48_000));
+
+        let texts: Vec<_> = events
+            .iter()
+            .map(|event| match event {
+                Event::Preview { text, .. } | Event::Final { text } => text.as_str(),
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        assert_eq!(texts, ["fast", "fast", "fast", "full"]);
+    }
+
+    struct BlockingFirstCall {
+        started: mpsc::Sender<()>,
+        release: Receiver<()>,
+        calls: usize,
+    }
+
+    impl Transcriber for BlockingFirstCall {
+        fn transcribe(&mut self, samples: &[f32]) -> Result<String, TranscribeError> {
+            self.calls += 1;
+            if self.calls == 1 {
+                self.started.send(()).unwrap();
+                self.release.recv().unwrap();
+            }
+            Ok(samples.len().to_string())
+        }
+    }
+
+    fn pipeline_events(config_rate: u32) -> (PipelineConfig, Receiver<Event>, mpsc::Sender<Event>) {
+        let (event_tx, event_rx) = mpsc::channel();
+        let config = PipelineConfig {
+            input_sample_rate: config_rate,
+            input_channels: 2,
+            segmenter: SegmenterConfig::default(),
+            max_merged_preview_ms: 0,
+            auto: None,
+        };
+        (config, event_rx, event_tx)
+    }
+
+    #[test]
+    fn previews_stopped_up_front_leave_only_the_final() {
+        let (config, event_rx, event_tx) = pipeline_events(48_000);
+        let (audio_tx, audio_rx) = mpsc::sync_channel(64);
+        let pipeline = Pipeline::start(config, audio_rx, LengthTranscriber, move |event| {
+            event_tx.send(event).unwrap();
+        });
+
+        pipeline.stop_previews();
+        for chunk in stereo_input(48_000).chunks(960) {
+            audio_tx.send(chunk.to_vec()).unwrap();
+        }
+        drop(audio_tx);
+        pipeline.finish().unwrap();
+
+        let events: Vec<_> = event_rx.try_iter().collect();
+        let [Event::Final { text }] = events.as_slice() else {
+            panic!("expected only Final, got {events:?}");
+        };
+        let final_len: i64 = text.parse().unwrap();
+        assert!((final_len - 17 * 16_000).abs() <= 2, "got {final_len}");
+    }
+
+    #[test]
+    fn a_preview_in_flight_when_stopping_is_dropped_and_later_ones_are_skipped() {
+        let (config, event_rx, event_tx) = pipeline_events(48_000);
+        let (audio_tx, audio_rx) = mpsc::sync_channel(64);
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let transcriber = BlockingFirstCall {
+            started: started_tx,
+            release: release_rx,
+            calls: 0,
+        };
+        let pipeline = Pipeline::start(config, audio_rx, transcriber, move |event| {
+            event_tx.send(event).unwrap();
+        });
+
+        let rate = 48_000;
+        let silence = vec![0.0; rate];
+        let mono = [
+            silence.clone(),
+            tone(rate as u32, 2),
+            silence.clone(),
+            tone(rate as u32, 2),
+            silence,
+        ]
+        .concat();
+        let stereo: Vec<f32> = mono.iter().flat_map(|&s| [s, s]).collect();
+        for chunk in stereo.chunks(960) {
+            audio_tx.send(chunk.to_vec()).unwrap();
+        }
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+
+        pipeline.stop_previews();
+        release_tx.send(()).unwrap();
+        drop(audio_tx);
+        pipeline.finish().unwrap();
+
+        let events: Vec<_> = event_rx.try_iter().collect();
+        let [Event::Final { text }] = events.as_slice() else {
+            panic!("expected only Final, got {events:?}");
+        };
+        let final_len: i64 = text.parse().unwrap();
+        assert!((final_len - 7 * 16_000).abs() <= 2, "got {final_len}");
+    }
+
+    #[test]
+    fn empty_recording_gives_empty_final() {
+        let events = run_pipeline(LengthTranscriber, &[]);
+        assert_eq!(
+            events,
+            vec![Event::Final {
+                text: String::new()
+            }]
+        );
+    }
+
+    #[test]
+    fn transcriber_errors_are_reported_without_stopping_the_pipeline() {
+        let events = run_pipeline(FailingTranscriber, &stereo_input(48_000));
+        assert!(events.iter().all(|e| matches!(e, Event::Failed { .. })));
+        assert_eq!(events.len(), 4);
+    }
+
+    fn stereo(mono: &[f32]) -> Vec<f32> {
+        mono.iter().flat_map(|&s| [s, s]).collect()
+    }
+
+    fn silent(rate: u32, seconds: u32) -> Vec<f32> {
+        vec![0.0; (rate * seconds) as usize]
+    }
+
+    fn run_auto(mono: &[f32]) -> Vec<Event> {
+        run_configured(
+            LengthTranscriber,
+            &stereo(mono),
+            Some(AutoConfig::new(2_000)),
+        )
+    }
+
+    fn kinds(events: &[Event]) -> Vec<&'static str> {
+        events
+            .iter()
+            .map(|event| match event {
+                Event::Preview { .. } => "preview",
+                Event::UtteranceStarted => "started",
+                Event::UtteranceEnded => "ended",
+                Event::Final { .. } => "final",
+                Event::Failed { .. } => "failed",
+            })
+            .collect()
+    }
+
+    #[test]
+    fn auto_mode_finalizes_each_utterance_after_a_long_pause() {
+        let rate = 48_000;
+        let mono = [
+            silent(rate, 1),
+            tone(rate, 2),
+            silent(rate, 3),
+            tone(rate, 3),
+            silent(rate, 3),
+        ]
+        .concat();
+
+        let events = run_auto(&mono);
+
+        assert_eq!(
+            kinds(&events),
+            ["ended", "final", "started", "ended", "final"]
+        );
+    }
+
+    #[test]
+    fn auto_mode_waits_without_emitting_when_nothing_more_is_said() {
+        let rate = 48_000;
+        let mono = [tone(rate, 2), silent(rate, 30)].concat();
+
+        let events = run_auto(&mono);
+
+        assert_eq!(kinds(&events), ["ended", "final"]);
+    }
+
+    #[test]
+    fn auto_mode_ignores_a_click_while_waiting() {
+        let rate = 48_000;
+        let click = tone(rate, 1)[..(rate / 20) as usize].to_vec();
+        let mono = [tone(rate, 2), silent(rate, 3), click, silent(rate, 3)].concat();
+
+        let events = run_auto(&mono);
+
+        assert_eq!(kinds(&events), ["ended", "final"]);
+    }
+
+    #[test]
+    fn auto_mode_finalizes_a_partial_utterance_when_the_recording_ends() {
+        let rate = 48_000;
+        let mono = [
+            tone(rate, 2),
+            silent(rate, 3),
+            tone(rate, 2),
+            silent(rate, 1),
+        ]
+        .concat();
+
+        let events = run_auto(&mono);
+
+        assert_eq!(kinds(&events), ["ended", "final", "started", "final"]);
+    }
+
+    #[test]
+    fn the_second_utterance_is_transcribed_without_the_first() {
+        let rate = 48_000;
+        let mono = [
+            tone(rate, 2),
+            silent(rate, 3),
+            tone(rate, 2),
+            silent(rate, 3),
+        ]
+        .concat();
+
+        let events = run_auto(&mono);
+
+        let lengths: Vec<i64> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Final { text } => Some(text.parse().unwrap()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lengths.len(), 2);
+        assert!(
+            lengths[0] > 2 * 16_000 && lengths[0] < 3 * 16_000,
+            "the pause should be trimmed, first utterance was {} samples",
+            lengths[0]
+        );
+        assert!(
+            lengths[1] > 2 * 16_000 && lengths[1] < 4 * 16_000,
+            "second utterance was {} samples",
+            lengths[1]
+        );
+    }
+}
+
+#[cfg(test)]
+mod shared_transcriber_tests {
+    use super::*;
+
+    struct EchoLanguage(Option<String>);
+
+    impl Transcriber for EchoLanguage {
+        fn transcribe(&mut self, _: &[f32]) -> Result<String, TranscribeError> {
+            Ok(self.0.clone().unwrap_or_else(|| "auto".to_owned()))
+        }
+
+        fn set_language(&mut self, language: Option<&str>) {
+            self.0 = language.map(str::to_owned);
+        }
+    }
+
+    #[test]
+    fn clones_share_one_underlying_model() {
+        let shared = SharedTranscriber::new(EchoLanguage(None));
+        let mut first = shared.clone();
+        let mut second = shared;
+
+        assert_eq!(second.transcribe(&[]).unwrap(), "auto");
+        first.set_language(Some("de"));
+        assert_eq!(second.transcribe(&[]).unwrap(), "de");
+    }
+
+    #[test]
+    fn a_panic_in_the_model_reports_an_error_instead_of_propagating() {
+        struct Panicking;
+        impl Transcriber for Panicking {
+            fn transcribe(&mut self, _: &[f32]) -> Result<String, TranscribeError> {
+                panic!("model crashed");
+            }
+        }
+
+        let mut shared = SharedTranscriber::new(Panicking);
+        let mut crashing = shared.clone();
+        let _ = std::thread::spawn(move || crashing.transcribe(&[])).join();
+
+        assert!(shared.transcribe(&[]).is_err());
     }
 }

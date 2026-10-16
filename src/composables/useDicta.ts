@@ -19,6 +19,8 @@ import {
   type InputDevice,
   type ModelInfo,
   type Phase,
+  Hotkey,
+  setInsertShortcut,
 } from '../api';
 
 export interface AutoMode {
@@ -56,6 +58,8 @@ export function useDicta() {
   const models = ref<ModelInfo[]>([]);
   const download = ref<DownloadState | null>(null);
   const copied = ref<boolean>(false);
+  const insertShortcut = ref<string>('');
+  const shortcutError = ref<string | null>(null);
   let lastFinal: string | null = null;
   const transcribing = ref<boolean>(false);
 
@@ -187,6 +191,15 @@ export function useDicta() {
     void run(resetTranscript);
   }
 
+  async function changeInsertShortcut(hotkey: Hotkey) {
+    try {
+      insertShortcut.value = await setInsertShortcut(hotkey);
+      shortcutError.value = null;
+    } catch (cause) {
+      shortcutError.value = String(cause);
+    }
+  }
+
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
 
   const copyTranscript = () =>
@@ -215,6 +228,8 @@ export function useDicta() {
       const status = await getStatus();
       phase.value = status.phase;
       modelLoaded.value = status.modelLoaded;
+      insertShortcut.value = status.insertShortcut;
+      shortcutError.value = status.shortcutError;
     }),
   );
 
@@ -233,6 +248,9 @@ export function useDicta() {
     loadedSource,
     loadingModel,
     copied,
+    insertShortcut,
+    shortcutError,
+    changeInsertShortcut,
     canLoad,
     canCopy,
     history,

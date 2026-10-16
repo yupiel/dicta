@@ -8,6 +8,7 @@ use crate::{
     capture::{self, InputDeviceInfo},
     events::{UiEvent, emit_ui_event},
     history::{self, HistoryEntry, HistoryError, HistoryStore},
+    hotkey::{Hotkey, InsertShortcut, swap_shortcut},
     live_text::LiveTextStore,
     models::{self, DownloadGate, ModelError, ModelInfo},
     recorder::{self, Phase, Recorder, RecorderError, StartOptions},
@@ -67,6 +68,8 @@ impl Serialize for CommandError {
 pub struct DictaStatus {
     phase: Phase,
     model_loaded: bool,
+    insert_shortcut: String,
+    shortcut_error: Option<String>,
 }
 
 fn data_subdir(app: &AppHandle, name: &str) -> Result<PathBuf, tauri::Error> {
@@ -163,7 +166,7 @@ pub async fn load_model(recorder: State<'_, Recorder>, path: String) -> Result<(
         if !Path::new(&path).is_file() {
             return Err(format!("model file not found: {path}"));
         }
-        
+
         let transcriber = WhisperTranscriber::load(&path, None)
             .map_err(|error| format!("cannot load model {path}: {error}"))?;
         recorder.set_model(transcriber, path);
@@ -175,10 +178,17 @@ pub async fn load_model(recorder: State<'_, Recorder>, path: String) -> Result<(
 }
 
 #[tauri::command]
-pub async fn get_status(recorder: State<'_, Recorder>) -> Result<DictaStatus, String> {
+pub async fn get_status(
+    recorder: State<'_, Recorder>,
+    shortcut: State<'_, InsertShortcut>,
+) -> Result<DictaStatus, String> {
+    let shortcut = shortcut.lock();
+
     Ok(DictaStatus {
         phase: recorder.phase().into(),
         model_loaded: recorder.has_model(),
+        insert_shortcut: shortcut.hotkey.label(),
+        shortcut_error: shortcut.error.clone(),
     })
 }
 
@@ -232,4 +242,33 @@ pub async fn clear_history(history: State<'_, HistoryStore>) -> Result<(), Comma
     tauri::async_runtime::spawn_blocking(move || history.clear())
         .await?
         .map_err(CommandError::HistoryError)
+}
+
+#[tauri::command]
+pub async fn set_insert_shortcut(
+    app: AppHandle,
+    shortcut: State<'_, InsertShortcut>,
+    hotkey: Hotkey,
+) -> Result<String, String> {
+    let hotkey = Hotkey::new(
+        hotkey.ctrl,
+        hotkey.alt,
+        hotkey.shift,
+        hotkey.meta,
+        &hotkey.key,
+    )
+    .map_err(|error| error.to_string())?;
+
+    let mut state = shortcut.lock();
+    swap_shortcut(&app, &mut state, hotkey)?;
+    state.error = None;
+    let label = state.hotkey.label();
+
+    if let Some(dir) = shortcut.file.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|error| format!("cannot save the shortcut: {error}"))?;
+    }
+    std::fs::write(&shortcut.file, &label)
+        .map_err(|error| format!("{label} is active but could not be saved: {error}"))?;
+    Ok(label)
 }

@@ -35,8 +35,6 @@ const percent = computed(() => {
         :key="model.id"
         class="model"
       >
-      {{ model }}
-      {{ canLoad }}
         <div class="model__info">
           <span class="model__name">{{ model.label }}</span>
           <span class="muted">{{ model.sizeMb }} MB</span>

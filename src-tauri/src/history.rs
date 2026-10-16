@@ -166,3 +166,132 @@ fn read_entry(path: &Path) -> Option<HistoryEntry> {
         text,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::TempDir;
+
+    fn store(dir: &TempDir) -> HistoryStore {
+        HistoryStore::new(dir.path().join("history"))
+    }
+
+    #[test]
+    fn missing_directory_lists_as_empty() {
+        let dir = TempDir::new("history-missing");
+        assert_eq!(store(&dir).list().unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn added_entry_is_listed_with_its_timestamp() {
+        let dir = TempDir::new("history-add");
+        let store = store(&dir);
+
+        let added = store
+            .add_at(1_700_000_000_000, 3, "  hello world \n")
+            .unwrap();
+
+        let entry = added.unwrap();
+        assert_eq!(entry.id, "1700000000000-3");
+        assert_eq!(entry.text, "hello world");
+        assert_eq!(store.list().unwrap(), vec![entry]);
+    }
+
+    #[test]
+    fn blank_text_is_not_stored() {
+        let dir = TempDir::new("history-blank");
+        let store = store(&dir);
+
+        assert_eq!(store.add_at(1, 1, "  \n ").unwrap(), None);
+        assert_eq!(store.list().unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn entries_are_listed_newest_first() {
+        let dir = TempDir::new("history-order");
+        let store = store(&dir);
+        store.add_at(2_000, 1, "second").unwrap();
+        store.add_at(1_000, 2, "first").unwrap();
+        store.add_at(2_000, 10, "third").unwrap();
+
+        let texts: Vec<_> = store.list().unwrap().into_iter().map(|e| e.text).collect();
+
+        assert_eq!(texts, ["third", "second", "first"]);
+    }
+
+    #[test]
+    fn unrelated_files_are_ignored() {
+        let dir = TempDir::new("history-ignore");
+        let store = store(&dir);
+        store.add_at(1, 1, "kept").unwrap();
+        fs::write(dir.path().join("history").join("notes.txt"), "x").unwrap();
+        fs::write(dir.path().join("history").join("2-2.tmp"), "x").unwrap();
+
+        assert_eq!(store.list().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn delete_removes_one_entry_and_tolerates_repeats() {
+        let dir = TempDir::new("history-delete");
+        let store = store(&dir);
+        store.add_at(1, 1, "a").unwrap();
+        store.add_at(2, 1, "b").unwrap();
+
+        store.delete("1-1").unwrap();
+        store.delete("1-1").unwrap();
+
+        let texts: Vec<_> = store.list().unwrap().into_iter().map(|e| e.text).collect();
+        assert_eq!(texts, ["b"]);
+    }
+
+    #[test]
+    fn delete_rejects_ids_that_could_leave_the_directory() {
+        let dir = TempDir::new("history-traversal");
+        let store = store(&dir);
+
+        for id in ["../secret", "1-1/../../x", "", "abc", "1-", "-1", "1-1-1"] {
+            assert!(
+                matches!(store.delete(id), Err(HistoryError::InvalidId(_))),
+                "{id}"
+            );
+        }
+    }
+
+    #[test]
+    fn locate_returns_the_file_of_an_existing_entry_only() {
+        let dir = TempDir::new("history-locate");
+        let store = store(&dir);
+        store.add_at(5, 1, "text").unwrap();
+
+        let path = store.locate("5-1").unwrap();
+
+        assert_eq!(fs::read_to_string(path).unwrap(), "text");
+        assert!(matches!(store.locate("6-1"), Err(HistoryError::Io(_))));
+        assert!(matches!(
+            store.locate("../5-1"),
+            Err(HistoryError::InvalidId(_))
+        ));
+    }
+
+    #[test]
+    fn clear_removes_everything() {
+        let dir = TempDir::new("history-clear");
+        let store = store(&dir);
+        store.add_at(1, 1, "a").unwrap();
+        store.add_at(2, 1, "b").unwrap();
+
+        store.clear().unwrap();
+
+        assert_eq!(store.list().unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn add_uses_the_current_time() {
+        let dir = TempDir::new("history-now");
+        let store = store(&dir);
+
+        let entry = store.add(1, "now").unwrap().unwrap();
+
+        assert!(entry.created_at_ms > 1_700_000_000_000);
+    }
+}

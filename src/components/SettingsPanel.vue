@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import type { InputDevice, ModelInfo } from '../api';
+import type { Hotkey, InputDevice, ModelInfo } from '../api';
 import type { AutoMode, DownloadState } from '../composables/useDicta';
+import HotkeyInput from './HotkeyInput.vue';
 import ModelPanel from './ModelPanel.vue';
 
 const selectedInputDevice = defineModel<string | undefined>('selectedInputDevice', { required: true });
@@ -14,11 +15,14 @@ defineProps<{
   canLoad: boolean;
   loadedSource: string | null;
   loading: boolean;
+  insertShortcut: string;
+  shortcutError: string | null;
 }>();
 
 const emit = defineEmits<{
   load: [path: string];
   download: [modelId: string];
+  changeShortcut: [hotkey: Hotkey];
 }>();
 </script>
 
@@ -97,6 +101,31 @@ const emit = defineEmits<{
           :disabled="!autoMode.enabled"
         >
       </label>
+    </section>
+
+    <section class="field-group">
+      <h3>Insert into other apps</h3>
+      <p class="muted hint">
+        Press <kbd>{{ insertShortcut }}</kbd> in any application to paste the text currently shown here.
+      </p>
+      <label
+        class="field"
+        for="insert-shortcut"
+      >
+        <span>Shortcut (click, then press the new keys)</span>
+        <HotkeyInput
+          id="insert-shortcut"
+          :label="insertShortcut"
+          @change="emit('changeShortcut', $event)"
+        />
+      </label>
+      <p
+        v-if="shortcutError"
+        class="field-error"
+        role="alert"
+      >
+        {{ shortcutError }}
+      </p>
     </section>
 
     <ModelPanel

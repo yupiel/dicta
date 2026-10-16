@@ -1,8 +1,12 @@
 use std::{
-    fs::{self, File}, io::{self, Read, Write}, path::{Path, PathBuf}, sync::{
+    fs::{self, File},
+    io::{self, Read, Write},
+    path::{Path, PathBuf},
+    sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-    }, time::Duration,
+    },
+    time::Duration,
 };
 
 use serde::Serialize;
@@ -179,4 +183,129 @@ fn copy_checked(
     }
     on_progress(received, expected);
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::TempDir;
+
+    struct FailingReader {
+        remaining: usize,
+    }
+
+    impl Read for FailingReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if self.remaining == 0 {
+                return Err(io::Error::new(io::ErrorKind::ConnectionReset, "reset"));
+            }
+            let count = self.remaining.min(buffer.len());
+            buffer[..count].fill(1);
+            self.remaining -= count;
+            Ok(count)
+        }
+    }
+
+    #[test]
+    fn model_ids_and_file_names_are_unique() {
+        for (index, spec) in MODELS.iter().enumerate() {
+            assert!(MODELS[index + 1..]
+                .iter()
+                .all(|other| other.id != spec.id && other.file_name != spec.file_name));
+            assert!(spec.url.ends_with(spec.file_name));
+        }
+    }
+
+    #[test]
+    fn complete_download_is_installed_and_reports_progress() {
+        let dir = TempDir::new("models-ok");
+        let destination = dir.path().join("model.bin");
+        let data = vec![7u8; 3 * 1024 * 1024 + 123];
+        let mut reports = Vec::new();
+
+        write_atomically(
+            data.as_slice(),
+            Some(data.len() as u64),
+            &destination,
+            |received, total| reports.push((received, total)),
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(&destination).unwrap(), data);
+        assert!(!dir.path().join("model.bin.part").exists());
+        assert!(reports.windows(2).all(|pair| pair[0].0 <= pair[1].0));
+        assert_eq!(
+            *reports.last().unwrap(),
+            (data.len() as u64, Some(data.len() as u64))
+        );
+    }
+
+    #[test]
+    fn download_without_content_length_is_accepted() {
+        let dir = TempDir::new("models-no-length");
+        let destination = dir.path().join("model.bin");
+
+        write_atomically(&b"abc"[..], None, &destination, |_, _| {}).unwrap();
+
+        assert_eq!(fs::read(&destination).unwrap(), b"abc");
+    }
+
+    #[test]
+    fn truncated_download_leaves_nothing_behind() {
+        let dir = TempDir::new("models-truncated");
+        let destination = dir.path().join("model.bin");
+
+        let result = write_atomically(&b"abc"[..], Some(10), &destination, |_, _| {});
+
+        assert!(matches!(
+            result,
+            Err(ModelError::Incomplete {
+                expected: 10,
+                received: 3
+            })
+        ));
+        assert!(!destination.exists());
+        assert!(!dir.path().join("model.bin.part").exists());
+    }
+
+    #[test]
+    fn empty_download_is_an_error() {
+        let dir = TempDir::new("models-empty");
+        let destination = dir.path().join("model.bin");
+
+        let result = write_atomically(&b""[..], None, &destination, |_, _| {});
+
+        assert!(matches!(result, Err(ModelError::Empty)));
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn connection_failure_midway_leaves_nothing_behind() {
+        let dir = TempDir::new("models-reset");
+        let destination = dir.path().join("model.bin");
+
+        let result = write_atomically(
+            FailingReader { remaining: 1000 },
+            None,
+            &destination,
+            |_, _| {},
+        );
+
+        assert!(matches!(result, Err(ModelError::Http(_))));
+        assert!(!destination.exists());
+        assert!(!dir.path().join("model.bin.part").exists());
+    }
+
+    #[test]
+    fn only_one_download_may_run_at_a_time() {
+        let gate = DownloadGate::default();
+
+        let first = gate.try_acquire();
+        assert!(first.is_some());
+        assert!(gate.try_acquire().is_none());
+
+        drop(first);
+        assert!(gate.try_acquire().is_some());
+    }
 }

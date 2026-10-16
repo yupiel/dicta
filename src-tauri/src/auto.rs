@@ -1,4 +1,4 @@
-use crate::segmenter::{ms_to_samples, Segmenter, SegmenterConfig};
+use crate::segmenter::{Segmenter, SegmenterConfig, ms_to_samples};
 
 pub const DEFAULT_RESUME_RMS: f32 = 0.01;
 pub const DEFAULT_RESUME_SPEECH_MS: u32 = 300;
@@ -62,7 +62,6 @@ impl Waiter {
         None
     }
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -232,14 +232,195 @@ impl Segmenter {
         }
 
         if self.speech_len >= self.min_speech_len {
-            out.push(Segment {
-                samples,
-                reason,
-            });
+            out.push(Segment { samples, reason });
         }
 
         self.active = false;
         self.speech_len = 0;
         self.trailing_silence = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RATE: usize = WHISPER_SAMPLE_RATE as usize;
+    const PRE_ROLL: usize = RATE * 3 / 10;
+
+    fn tone(freq: f32, amplitude: f32, seconds: f32) -> Vec<f32> {
+        (0..(RATE as f32 * seconds) as usize)
+            .map(|i| amplitude * (2.0 * std::f32::consts::PI * freq * i as f32 / RATE as f32).sin())
+            .collect()
+    }
+
+    fn silence(seconds: f32) -> Vec<f32> {
+        vec![0.0; (RATE as f32 * seconds) as usize]
+    }
+
+    fn speech(seconds: f32) -> Vec<f32> {
+        tone(220.0, 0.3, seconds)
+    }
+
+    fn with_background(signal: &[f32], amplitude: f32) -> Vec<f32> {
+        let background = tone(5_000.0, amplitude, signal.len() as f32 / RATE as f32);
+        signal.iter().zip(background).map(|(s, b)| s + b).collect()
+    }
+
+    fn run(signal: &[f32]) -> Vec<Segment> {
+        let mut segmenter = Segmenter::new(SegmenterConfig::default());
+        let mut segments = segmenter.push(signal);
+        segments.extend(segmenter.finish());
+        segments
+    }
+
+    #[test]
+    fn pure_silence_yields_nothing() {
+        assert!(run(&silence(30.0)).is_empty());
+    }
+
+    #[test]
+    fn single_utterance_is_cut_on_pause() {
+        let signal = [silence(1.0), speech(1.0), silence(1.0)].concat();
+        let segments = run(&signal);
+
+        assert_eq!(segments.len(), 1);
+        let segment = &segments[0];
+        assert_eq!(segment.reason, CutReason::Pause);
+        assert_eq!(segment.samples.len(), PRE_ROLL + RATE + PRE_ROLL);
+    }
+
+    #[test]
+    fn long_speech_is_cut_every_ten_seconds() {
+        let segments = run(&speech(25.0));
+
+        let reasons: Vec<_> = segments.iter().map(|s| s.reason).collect();
+        assert_eq!(
+            reasons,
+            vec![
+                CutReason::MaxLength,
+                CutReason::MaxLength,
+                CutReason::EndOfRecording
+            ]
+        );
+        assert_eq!(segments[0].samples.len(), 10 * RATE);
+        assert_eq!(segments[1].samples.len(), 10 * RATE);
+        assert_eq!(segments[2].samples.len(), 5 * RATE);
+    }
+
+    #[test]
+    fn long_pause_splits_into_two_segments() {
+        let signal = [speech(1.0), silence(1.0), speech(1.0), silence(1.0)].concat();
+        assert_eq!(run(&signal).len(), 2);
+    }
+
+    #[test]
+    fn short_pause_stays_in_one_segment() {
+        let signal = [speech(1.0), silence(0.3), speech(1.0), silence(1.0)].concat();
+        let segments = run(&signal);
+        assert_eq!(segments.len(), 1);
+        assert!(segments[0].samples.len() > 2 * RATE);
+    }
+
+    #[test]
+    fn very_short_blip_is_ignored() {
+        let signal = [silence(1.0), speech(0.04), silence(1.0)].concat();
+        assert!(run(&signal).is_empty());
+    }
+
+    #[test]
+    fn result_does_not_depend_on_chunk_size() {
+        let signal = [
+            silence(0.5),
+            speech(3.0),
+            silence(1.0),
+            speech(12.0),
+            silence(1.0),
+        ]
+        .concat();
+        let expected = run(&signal);
+
+        let mut segmenter = Segmenter::new(SegmenterConfig::default());
+        let mut actual = Vec::new();
+        for chunk in signal.chunks(137) {
+            actual.extend(segmenter.push(chunk));
+        }
+        actual.extend(segmenter.finish());
+
+        assert_eq!(expected.len(), actual.len());
+        for (a, b) in expected.iter().zip(&actual) {
+            assert_eq!(a.samples.len(), b.samples.len());
+            assert_eq!(a.reason, b.reason);
+        }
+    }
+
+    #[test]
+    fn quiet_speech_is_detected() {
+        let signal = [silence(1.0), tone(220.0, 0.008, 2.0), silence(1.5)].concat();
+        let segments = run(&signal);
+
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].reason, CutReason::Pause);
+        assert_eq!(segments[0].samples.len(), PRE_ROLL + 2 * RATE + PRE_ROLL);
+    }
+
+    #[test]
+    fn quiet_passages_inside_speech_do_not_end_the_segment() {
+        let alternating: Vec<f32> = (0..7)
+            .flat_map(|i| {
+                let amplitude = if i % 2 == 0 { 0.02 } else { 0.004 };
+                tone(220.0, amplitude, 0.6)
+            })
+            .collect();
+        let signal = with_background(&[silence(1.0), alternating, silence(1.5)].concat(), 0.0005);
+
+        let segments = run(&signal);
+
+        assert_eq!(segments.len(), 1);
+        assert!(segments[0].samples.len() > 4 * RATE);
+    }
+
+    #[test]
+    fn steady_background_noise_does_not_trigger() {
+        let signal = with_background(&silence(8.0), 0.003);
+        assert!(run(&signal).is_empty());
+    }
+
+    #[test]
+    fn speech_over_steady_background_noise_is_cut_cleanly() {
+        let signal = with_background(
+            &[silence(1.0), tone(220.0, 0.1, 1.0), silence(1.5)].concat(),
+            0.003,
+        );
+        let segments = run(&signal);
+
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].reason, CutReason::Pause);
+        assert!(segments[0].samples.len() < RATE * 2);
+    }
+
+    #[test]
+    fn silence_since_speech_is_unknown_before_any_speech() {
+        let mut segmenter = Segmenter::new(SegmenterConfig::default());
+        segmenter.push(&silence(2.0));
+        assert_eq!(segmenter.silence_since_speech(), None);
+    }
+
+    #[test]
+    fn silence_since_speech_keeps_counting_across_segment_cuts() {
+        let mut segmenter = Segmenter::new(SegmenterConfig::default());
+        segmenter.push(&speech(1.0));
+        segmenter.push(&silence(2.0));
+
+        let quiet = segmenter.silence_since_speech().unwrap();
+        let expected = 2 * RATE - RATE / 50..=2 * RATE + RATE / 50;
+        assert!(expected.contains(&quiet), "got {quiet}");
+    }
+
+    #[test]
+    fn speech_resets_the_silence_counter() {
+        let mut segmenter = Segmenter::new(SegmenterConfig::default());
+        segmenter.push(&[speech(1.0), silence(1.0), speech(0.5)].concat());
+        assert!(segmenter.silence_since_speech().unwrap() < RATE / 10);
     }
 }
